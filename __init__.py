@@ -1,27 +1,62 @@
-import onnxruntime as ort
+try:
+    import os
+    import onnxruntime as ort
+    from onnxruntime import InferenceSession as _OrigSession
 
-def _patch_ort_providers():
-    try:
-        sess_opts = ort.SessionOptions()
+    # Detect available providers
+    prov = ort.get_available_providers()
 
-        # Desired providers priority order
-        desired_providers = [
-            "TensorrtExecutionProvider",
-            "CUDAExecutionProvider",
-            "CPUExecutionProvider"
-        ]
+    # Default TensorRT cache directory
+    cache = os.environ.get("TRT_CACHE", r"D:\ComfyUI\trt_engine_cache")
 
-        # Show original and intended providers
-        print(f"[force_ort_cuda] Providers: {ort.get_available_providers()} default= {desired_providers}")
+    # TensorRT-specific options
+    TRT_OPTS = {
+        "trt_fp16_enable": True,
+        "trt_engine_cache_enable": True,
+        "trt_engine_cache_path": cache,
+        "trt_timing_cache_enable": True,
+        "trt_max_workspace_size": 2 * 1024 * 1024 * 1024,  # 2 GB
+    }
 
-        # Override default execution providers
-        ort.set_default_logger_severity(3)  # 0 = verbose, 3 = warning
-        sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        ort.set_default_providers(desired_providers)
+    # Decide default providers + options
+    if "TensorrtExecutionProvider" in prov:
+        _default = ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
+        _prov_options = [TRT_OPTS, {}, {}]
+    elif "CUDAExecutionProvider" in prov:
+        _default = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        _prov_options = [{}, {}]
+    else:
+        _default = ["CPUExecutionProvider"]
+        _prov_options = [{}]
 
-        print(f"[OK] Patched: \"{__file__}\"")
-    except Exception as e:
-        print(f"[force_ort_cuda] ERROR applying provider patch: {e}")
+    # Monkey-patch InferenceSession to set providers automatically
+    class _PatchedSession(_OrigSession):
+        def __init__(
+            self,
+            path_or_bytes,
+            sess_options=None,
+            providers=None,
+            provider_options=None,
+            *args, **kwargs
+        ):
+            if providers is None:
+                providers = _default
+                provider_options = _prov_options
+            super().__init__(
+                path_or_bytes,
+                sess_options=sess_options,
+                providers=providers,
+                provider_options=provider_options,
+                *args, **kwargs
+            )
 
-# Apply patch immediately when the module loads
-_patch_ort_providers()
+    ort.InferenceSession = _PatchedSession
+
+    print(f"[force_ort_cuda] Providers: {prov} default= {_default}")
+
+except Exception as e:
+    print(f"[force_ort_cuda] ERROR applying provider patch: {e}")
+
+# Needed so ComfyUI Manager recognizes it as a valid node module
+NODE_CLASS_MAPPINGS = {}
+NODE_DISPLAY_NAME_MAPPINGS = {}
